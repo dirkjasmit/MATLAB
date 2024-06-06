@@ -7,10 +7,9 @@ This repository contains some useful functions for MATLAB
 ```
 
 ```markdown
-1. clusterPermutationTest3D_between.m is a script to perform cluster permutation test for between subject differences. Support file GetConnectMask provides an adjacency matrix for EEGLAB structs. Cluster permutation according to Maris and Oostenveld (2007).
-function [p_values, observedClusters, observedStats, permutedStats, clusterMask, stats] = clusterPermutationTest3D_between(D, G, adjacencyMatrix, varargin)
+# 1. clusterPermutationTest3D_between.m is a script to perform cluster permutation test for between subject differences. Support file GetConnectMask provides an adjacency matrix for EEGLAB structs. Cluster permutation according to Maris and Oostenveld (2007).
 
-# Calculates the cluster permutation effect for ERP data for two conditions.
+function [p_values, observedClusters, observedStats, permutedStats, clusterMask, stats] = clusterPermutationTest3D_between(D, G, adjacencyMatrix, varargin)
 
 D            : per subject ERPs (channel x time x subject) matrix, either values or difference scores between conditions.
 G            : grouping variable. Only two values allowed for now (0 and 1).
