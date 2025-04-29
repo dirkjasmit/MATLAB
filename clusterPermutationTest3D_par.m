@@ -1,4 +1,4 @@
-function [p_values, observedClusters, observedStats, permutedStats, clusterMask, fdr_p, tStats2D] = clusterPermutationTest3D_par(D, G, adjacencyMatrix, varargin)
+function [p_values, observedClusters, observedStats, permutedStats, clusterMask, fdr_p, tStats2D, scores] = clusterPermutationTest3D_par(D, G, adjacencyMatrix, varargin)
 %
 % Calculates the cluster permutation effect for ERP data for two
 % conditions. either within subject effect (is G is the same size as D)
@@ -23,7 +23,7 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
 
     % Add required parameters
     addRequired(p, 'D');
-    addRequired(p, 'D2');
+    addRequired(p, 'G');
     addRequired(p, 'adjacencyMatrix');
 
     % Add optional parameters with default values
@@ -32,6 +32,7 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
     addParameter(p, 'direction', 'pos');
     addParameter(p, 'numClusters', 1);
     addParameter(p, 'doImpute', true);
+    addParameter(p, 'covariates', []);
 
     % Parse input arguments
     parse(p, D, G, adjacencyMatrix, varargin{:});
@@ -43,6 +44,7 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
     direction = p.Results.direction;
     numClusters = p.Results.numClusters;
     doImpute = p.Results.doImpute;
+    C = p.Results.covariates;
     
     % check direction
     if ismember(lower(direction), {'pos','+'})
@@ -88,8 +90,13 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
     X = permute(X,[3 1 2]);
     [numSubjects, numLocations, numTimePoints] = size(X);
 
+    % check sizes
     if size(adjacencyMatrix,1) ~= numLocations
         error('adjacencyMatrix size does not match up to the data.')
+    end
+
+    if ~isempty(C) && size(C,1) ~= numSubjects
+        error('Covariates size does not match up with data size (n_rows differs)')
     end
 
 
@@ -100,24 +107,39 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
         valid = ~isnan(sum(X,2));
         X = X(valid,:);
         numSubjects = sum(valid);
+        X = reshape(X, numSubjects, numLocations, numTimePoints);
     end
-    X = reshape(X, numSubjects, numLocations, numTimePoints);
 
     % test for positive effects only! if ID's are unique for each line,
     % then use a simple correlatioon. Otherwise you need to use GEE!
     % flatten D into X
-    if cDoRepeated
-        [~,~,~,mod] = ttest(X);
-        df = size(X,1)-1;
+    if isempty(C)
+        if cDoRepeated
+            [~,~,~,mod] = ttest(X);
+            df = size(X,1)-1;
+        else
+            [~,~,~,mod] = ttest2(X(G==0,:,:),X(G~=0,:,:));
+            df = size(X,1)-2;
+        end
+        tStats = mod.tstat;  % T-statistics for each predictor
     else
-        [~,~,~,mod] = ttest2(X(G==0,:,:),X(G~=0,:,:));
-        df = size(X,1)-2;
+        % run the covariates model
+        if cDoRepeated
+            tStats = intercept_tvals_vectorized(X(:,:), C);
+            tStats = reshape(tStats, size(X));
+            df = size(X,1)-1-size(C,2);
+        else
+            tStats = ttest2_with_covariates(X(:,:), G, C);
+            tStats = reshape(tStats, size(X));
+            df = size(X,1)-2-size(C,2);
+        end
     end
-    tStats = mod.tstat;  % T-statistics for each predictor
-    pStats = 2 * tcdf(-abs(tStats), df);  % Two-tailed p-values
+
+    % get p-values and FDR based on t and df
+    pStats = 2 * tcdf(-abs(tStats), df);  % Two-tailed p-values from t
     tStats2D = squeeze(tStats(1,:,:)); 
     fdr_p = fdr(pStats(:));
-    fdr_p = reshape(fdr_p,numLocations,numTimePoints);
+    fdr_p = reshape(fdr_p, numLocations, numTimePoints);
 
 
     % Initialize permutation distribution of max cluster stats and details
@@ -127,7 +149,7 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
     if cDoRepeated
         [sortedStats, sortedInfo] = RunPermutation(X, [], pThreshold, numLocations, numTimePoints, adjacencyMatrix);
     else
-        [sortedStats, sortedInfo] = RunPermutation(X, [], pThreshold, numLocations, numTimePoints, adjacencyMatrix);
+        [sortedStats, sortedInfo] = RunPermutation(X, G, pThreshold, numLocations, numTimePoints, adjacencyMatrix);
     end
     
     if length(sortedInfo) < numClusters
@@ -138,9 +160,27 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
     % save these ordered, unpermuted data.
     observedClusters = sortedInfo;
     observedStats = sortedStats;
-    
-    
-    
+
+    % score subjects on the clusters if so requested
+    if nargout>7
+        scores = {};
+        for clust = 1:length(sortedInfo)
+            P = size(sortedInfo{clust}, 1);
+            
+            % Convert (row, col) to linear indices for a single 2D matrix
+            lin_idx = sub2ind([numLocations, numTimePoints], sortedInfo{clust}(:,1), sortedInfo{clust}(:,2));  % P × 1 linear indices
+        
+            % Preallocate result in scores
+            scores{clust} = zeros(1, numSubjects);
+            
+            % Loop across subjects
+            for n = 1:numSubjects
+                slice = squeeze(D(:,:, n));           % extract indovidual matrix first
+                values = slice(lin_idx);       % Mask the elements
+                scores{clust}(n) = mean(values);      % Average them
+            end
+        end
+    end
     
     
     % START OF PARALLEL LOOP -----------------------------------------------------
@@ -307,3 +347,66 @@ function [sortedStats, sortedInfo] = RunPermutation(X_permuted, G, pThreshold, n
         sortedInfo = clusterInfo(idx);
     end
 end
+
+
+function t_values = intercept_tvals_vectorized(X, C)
+    % INPUT:
+    %   X: (n × m) matrix of responses (each column is a Y)
+    %   C: (n × p) matrix of covariates
+    % OUTPUT:
+    %   t_values: (1 × m) vector of t-values for intercepts
+
+    [n, m] = size(X);
+    Z = [ones(n, 1), C];              % Design matrix (n × (p+1))
+    ZtZ_inv = inv(Z' * Z);            % (p+1) × (p+1)
+    H = Z * ZtZ_inv * Z';             % Hat matrix
+    M = eye(n) - H;                   % Residual-maker matrix
+
+    % Project X onto residual space
+    R = M * X;                        % Residuals after regressing each Y on Z
+    sigma2 = sum(R.^2, 1) / (n - size(Z, 2));  % 1 × m vector of residual variances
+
+    % Compute betas all at once
+    B = ZtZ_inv * (Z' * X);           % (p+1) × m matrix of coefficients
+
+    % Extract intercepts
+    b0 = B(1, :);                     % 1 × m vector of intercepts
+
+    % Standard errors of intercepts
+    se_b0 = sqrt(sigma2 * ZtZ_inv(1,1));  % 1 × m (broadcasted scalar * vector)
+
+    % Compute t-values
+    t_values = b0 ./ se_b0;
+end
+
+function t_values = ttest2_with_covariates(X, G, C)
+    % INPUTS:
+    %   X: (n × m) matrix of dependent variables
+    %   G: (n × 1) binary group label (0/1)
+    %   C: (n × p) matrix of covariates
+    % OUTPUT:
+    %   t_values: (1 × m) vector of t-statistics for G
+
+    [n, m] = size(X);
+    
+    % Design matrix: intercept, G, and covariates
+    Z = [ones(n,1), G, C];            % n × (p+2)
+    ZtZ_inv = inv(Z' * Z);            % (p+2) × (p+2)
+    H = Z * ZtZ_inv * Z';             % hat matrix
+    M = eye(n) - H;                   % residual-maker matrix
+
+    % Residuals of each model
+    R = M * X;                        % n × m residuals
+    sigma2 = sum(R.^2, 1) / (n - size(Z,2));  % 1 × m vector of residual variances
+
+    % Coefficients for all X columns
+    B = ZtZ_inv * (Z' * X);           % (p+2) × m
+
+    % Extract coefficient and standard error for G (2nd row)
+    b_G = B(2, :);                    % 1 × m
+    se_G = sqrt(sigma2 * ZtZ_inv(2,2));  % scalar × 1 × m broadcast
+
+    % t-values
+    t_values = b_G ./ se_G;
+end
+
