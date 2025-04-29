@@ -35,6 +35,6 @@ adjacencyMatrix : matrix describing which channels are connected (numChannels x 
 - clusterMask     : 2D matrix (channel x time) of the clusters with values (1, 2, ...) to indicate cluster inclusion
 - fdr_p           : FDR 'corrected' p-values (channel x time)
 - tStats2D        : initial t-value matrix (channel x time)
-- scores          : 
+- scores          : individual scores for each cluster, average values for each mask.
 
 
