@@ -28,11 +28,13 @@ adjacencyMatrix : matrix describing which channels are connected (numChannels x 
 
 **return values:**
 
-- p_values: one sided pvalues for the clusters
+- p_values        : one sided pvalues for the clusters. May be multiplied by 2 for two-sided values.
 - observedClusters: indices of the clusters
-- observedStats: summed-t statistic for the cluster
-- permutedStats: summed-t statistics of the randmomizations
-- clusterMask: 2D matrix (channel x time) of the clusters (1, 2, ...)
-- stats : further statistical output, including the 2D (channel x time) t statistics
+- observedStats   : summed-t statistic for each cluster
+- permutedStats   : summed-t statistics of the each of the numPermutations randmomisations
+- clusterMask     : 2D matrix (channel x time) of the clusters with values (1, 2, ...) to indicate cluster inclusion
+- fdr_p           : FDR 'corrected' p-values (channel x time)
+- tStats2D        : initial t-value matrix (channel x time)
+- scores          : 
 
 
