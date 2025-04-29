@@ -13,9 +13,9 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
 
 D            : per subject ERPs (channel x time x subject) matrix, either values or difference scores between conditions.
 G            : either
-- a grouping variable. Only two values allowed for now (0 and 1).
-- a data struct with the same dimensions as D that holds values of the second level of the within-subject condition
-- empty [], to be used when D already holds the difference scores between the conditions to-be-tested.
+    - a grouping variable. Only two values allowed for now (0 and 1).
+    - a data struct with the same dimensions as D that holds values of the second level of the within-subject condition
+    - empty [], to be used when D already holds the difference scores between the conditions to-be-tested.
 adjacencyMatrix : matrix describing which channels are connected (numChannels x numChannels). Take a look at GetConnectMask(), a handy tool to get an adjacency mask for EEGLAB data.
 
 **optional input (format "key", value )**
