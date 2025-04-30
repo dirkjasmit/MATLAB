@@ -1,4 +1,5 @@
-function [p_values, observedClusters, observedStats, permutedStats, clusterMask, fdr_p, tStats2D, scores] = clusterPermutationTest3D_par(D, G, adjacencyMatrix, varargin)
+function [p_values, observedClusters, observedStats, permutedStats, clusterMask, fdr_p, tStats2D, scores] = ...
+    clusterPermutationTest3D_par(D, G, adjacencyMatrix, varargin)
 %
 % Calculates the cluster permutation effect for ERP data for two
 % conditions. either within subject effect (is G is the same size as D)
@@ -33,6 +34,7 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
     addParameter(p, 'numClusters', 1);
     addParameter(p, 'doImpute', true);
     addParameter(p, 'covariates', []);
+    addParameter(p, 'parallel', []);
 
     % Parse input arguments
     parse(p, D, G, adjacencyMatrix, varargin{:});
@@ -44,7 +46,12 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
     direction = p.Results.direction;
     numClusters = p.Results.numClusters;
     doImpute = p.Results.doImpute;
-    C = p.Results.covariates;
+    Cov = p.Results.covariates;
+    tmp = p.Results.parallel;
+    doParallel = true;
+    if ~isempty(tmp) && (strcmpi(tmp,'off') || tmp<=1)
+        doParallel = false;
+    end
     
     % check direction
     if ismember(lower(direction), {'pos','+'})
@@ -55,12 +62,14 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
         error('direction must be ''pos'',''neg'' ')
     end
     
-    % get the right data to work on
+    % assume a single data matrix, change is necessary later
+    X=D;
+
+    % get the right data to work on and put this in X (and G for between)
     if isempty(G)
         cDoRepeated = true;
-        X = D;
         
-    elseif all(size(D)==size(G))
+    elseif ~isvector(G) && all(size(D)==size(G))
         cDoRepeated = true;
         if dir>0
             X = D - G;
@@ -76,7 +85,7 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
         if ~any(size(G)==1)
             error('Size of G does not match up to data G (between subjects effect) or is not the same size as the other data array (within effect)')
         end
-        if ~all(unique(G)==[0 1])
+        if ~all(ismember(unique(G), [0 1]))
             error('G as grouping variable must hold only 0,1')
         end
         if dir<0
@@ -95,7 +104,7 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
         error('adjacencyMatrix size does not match up to the data.')
     end
 
-    if ~isempty(C) && size(C,1) ~= numSubjects
+    if ~isempty(Cov) && size(Cov,1) ~= numSubjects
         error('Covariates size does not match up with data size (n_rows differs)')
     end
 
@@ -113,25 +122,25 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
     % test for positive effects only! if ID's are unique for each line,
     % then use a simple correlatioon. Otherwise you need to use GEE!
     % flatten D into X
-    if isempty(C)
+    if isempty(Cov)
         if cDoRepeated
             [~,~,~,mod] = ttest(X);
             df = size(X,1)-1;
         else
-            [~,~,~,mod] = ttest2(X(G==0,:,:),X(G~=0,:,:));
+            [~,~,~,mod] = ttest2(X(G~=0,:,:), X(G==0,:,:));
             df = size(X,1)-2;
         end
         tStats = mod.tstat;  % T-statistics for each predictor
     else
         % run the covariates model
         if cDoRepeated
-            tStats = intercept_tvals_vectorized(X(:,:), C);
-            tStats = reshape(tStats, size(X));
-            df = size(X,1)-1-size(C,2);
+            tStats = intercept_tvals_vectorized(X(:,:), Cov);
+            tStats = reshape(tStats, [1 numLocations numTimePoints]);
+            df = size(X,1)-1-size(Cov,2);
         else
-            tStats = ttest2_with_covariates(X(:,:), G, C);
-            tStats = reshape(tStats, size(X));
-            df = size(X,1)-2-size(C,2);
+            tStats = ttest2_with_covariates(X(:,:), G, Cov);
+            tStats = reshape(tStats, [1 numLocations numTimePoints]);
+            df = size(X,1)-2-size(Cov,2);
         end
     end
 
@@ -147,9 +156,9 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
     % permutedClusterDetails = cell(numPermutations, numClusters);
 
     if cDoRepeated
-        [sortedStats, sortedInfo] = RunPermutation(X, [], pThreshold, numLocations, numTimePoints, adjacencyMatrix);
+        [sortedStats, sortedInfo] = RunPermutation(X, [], Cov, pThreshold, numLocations, numTimePoints, adjacencyMatrix);
     else
-        [sortedStats, sortedInfo] = RunPermutation(X, G, pThreshold, numLocations, numTimePoints, adjacencyMatrix);
+        [sortedStats, sortedInfo] = RunPermutation(X, G, Cov, pThreshold, numLocations, numTimePoints, adjacencyMatrix);
     end
     
     if length(sortedInfo) < numClusters
@@ -164,7 +173,7 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
     % score subjects on the clusters if so requested
     if nargout>7
         scores = {};
-        for clust = 1:length(sortedInfo)
+        for clust = 1:numClusters
             P = size(sortedInfo{clust}, 1);
             
             % Convert (row, col) to linear indices for a single 2D matrix
@@ -183,36 +192,61 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
     end
     
     
-    % START OF PARALLEL LOOP -----------------------------------------------------
 
     maxClusterStats = cell(1, numPermutations+1); % Preallocate cell array
-    % run permutation in a parallel loop
-    parfor perm=1:numPermutations+1
 
-        % Permute the outcome: swap sign of X values for random subjects.
-        % Swap for all channels and time points.
-        if cDoRepeated
-            rnd = logical(randi(2,1,numSubjects)-1);
-            X_permuted = X;
-            %subplot(1,2,1); imagesc(squeeze(nanmean(X)),[-4 4]);
-            X_permuted(rnd,:,:) = -X_permuted(rnd,:,:);
-            %subplot(1,2,2); imagesc(squeeze(nanmean(X_permuted)),[-4 4]); drawnow
-            sortedStats = RunPermutation(X_permuted, [], pThreshold, numLocations, numTimePoints, adjacencyMatrix);
-        else
-            rnd = randperm(numSubjects);
-            G_permuted = G(rnd);
-            sortedStats = RunPermutation(X, G_permuted, pThreshold, numLocations, numTimePoints, adjacencyMatrix);
+    if doParallel
+        % START OF PARALLEL LOOP ---------------------------------------------
+        parfor perm=1:numPermutations+1
+            % Permute the outcome: swap sign of X values for random subjects.
+            % Swap for all channels and time points.
+            if cDoRepeated
+                rnd = logical(randi(2,1,numSubjects)-1);
+                X_permuted = X;
+                %subplot(1,2,1); imagesc(squeeze(nanmean(X)),[-4 4]);
+                X_permuted(rnd,:,:) = -X_permuted(rnd,:,:);
+                %subplot(1,2,2); imagesc(squeeze(nanmean(X_permuted)),[-4 4]); drawnow
+                sortedStats = RunPermutation(X_permuted, [], Cov, pThreshold, numLocations, numTimePoints, adjacencyMatrix);
+            else
+                rnd = randperm(numSubjects);
+                G_permuted = G(rnd);
+                sortedStats = RunPermutation(X, G_permuted, Cov, pThreshold, numLocations, numTimePoints, adjacencyMatrix);
+            end
+                
+            % Sort and store top cluster statistics and details
+            if length(sortedStats)<numClusters
+                sortedStats = [sortedStats repelem(0,numClusters-length(sortedStats))];
+            end
+            maxClusterStats{perm}(1:numClusters) = sortedStats(1:numClusters);
         end
-            
-        % Sort and store top cluster statistics and details
-        if length(sortedStats)<numClusters
-            sortedStats = [sortedStats repelem(0,numClusters-length(sortedStats))];
+
+    % START SERIAL LOOP --------------------------------------------------
+    else
+        for perm=1:numPermutations+1
+            % Permute the outcome: swap sign of X values for random subjects.
+            % Swap for all channels and time points.
+            if cDoRepeated
+                rnd = logical(randi(2,1,numSubjects)-1);
+                X_permuted = X;
+                %subplot(1,2,1); imagesc(squeeze(nanmean(X)),[-4 4]);
+                X_permuted(rnd,:,:) = -X_permuted(rnd,:,:);
+                %subplot(1,2,2); imagesc(squeeze(nanmean(X_permuted)),[-4 4]); drawnow
+                sortedStats = RunPermutation(X_permuted, [], Cov, pThreshold, numLocations, numTimePoints, adjacencyMatrix);
+            else
+                rnd = randperm(numSubjects);
+                G_permuted = G(rnd);
+                sortedStats = RunPermutation(X, G_permuted, Cov, pThreshold, numLocations, numTimePoints, adjacencyMatrix);
+            end
+                
+            % Sort and store top cluster statistics and details
+            if length(sortedStats)<numClusters
+                sortedStats = [sortedStats repelem(0,numClusters-length(sortedStats))];
+            end
+            maxClusterStats{perm}(1:numClusters) = sortedStats(1:numClusters);
         end
-        maxClusterStats{perm}(1:numClusters) = sortedStats(1:numClusters);
+
+    % END OF SERIAL LOOP -------------------------------------------------
     end
-    
-    % END OF PARALLEL LOOP -----------------------------------------------------
-    
     
     
     maxClusterStatsMatrix = cell2mat(maxClusterStats');
@@ -292,17 +326,33 @@ end
 % note that is G is empty a repeated test is used assuming X-permuted 
 % is a difference score with randomly flipped sign
     
-function [sortedStats, sortedInfo] = RunPermutation(X_permuted, G, pThreshold, numLocations, numTimePoints, adjacencyMatrix)
+function [sortedStats, sortedInfo] = RunPermutation(X_permuted, G, Cov, pThreshold, numLocations, numTimePoints, adjacencyMatrix)
 
      % Calculate permuted correlations and t-statistics
     if isempty(G)
-        [~,~,~,mod] = ttest(X_permuted);
-        df = size(X_permuted,1)-1;
+        % repeated version
+        if isempty(Cov)
+            [~,~,~,mod] = ttest(X_permuted);
+            df = size(X_permuted,1)-1;
+            permutedTStats = mod.tstat;
+        else
+            tStats = intercept_tvals_vectorized(X_permuted(:,:), Cov);
+            df = size(X_permuted,1)-1-size(Cov,2);
+            permutedTStats = reshape(tStats, [1 numLocations numTimePoints]);
+        end
     else
-        [~,~,~,mod] = ttest2(X_permuted(G==0,:,:),X_permuted(G~=0,:,:));
-        df = size(X_permuted,1)-2;
+        if isempty(Cov)
+            [~,~,~,mod] = ttest2(X_permuted(G~=0,:,:), X_permuted(G==0,:,:)); % test 1 against 0!!!
+            df = size(X_permuted,1)-2;
+            permutedTStats = mod.tstat;
+        else
+            tStats = ttest2_with_covariates(X_permuted(:,:), G, Cov);
+            df = size(X_permuted,1)-2-size(Cov,2);
+            permutedTStats = reshape(tStats, [1 numLocations numTimePoints]);
+        end
     end
-    permutedTStats = mod.tstat;
+    
+    % note that permutedTStats is a 3D matrix with 1 row.
     permutedPStats = 2*tcdf(-abs(permutedTStats), df);
     
     % Determine significant indices based on the p-value threshold. Only in
@@ -349,34 +399,63 @@ function [sortedStats, sortedInfo] = RunPermutation(X_permuted, G, pThreshold, n
 end
 
 
-function t_values = intercept_tvals_vectorized(X, C)
+function t_values = intercept_tvals_vectorized(Y, C)
     % INPUT:
     %   X: (n × m) matrix of responses (each column is a Y)
     %   C: (n × p) matrix of covariates
     % OUTPUT:
     %   t_values: (1 × m) vector of t-values for intercepts
 
-    [n, m] = size(X);
-    Z = [ones(n, 1), C];              % Design matrix (n × (p+1))
-    ZtZ_inv = inv(Z' * Z);            % (p+1) × (p+1)
-    H = Z * ZtZ_inv * Z';             % Hat matrix
-    M = eye(n) - H;                   % Residual-maker matrix
+    % center covariates to test the significance of the MEAN of each column
+    % of Y. Otherwise the intercept is tested!
+    C = C-mean(C);
 
-    % Project X onto residual space
-    R = M * X;                        % Residuals after regressing each Y on Z
-    sigma2 = sum(R.^2, 1) / (n - size(Z, 2));  % 1 × m vector of residual variances
-
-    % Compute betas all at once
-    B = ZtZ_inv * (Z' * X);           % (p+1) × m matrix of coefficients
-
-    % Extract intercepts
-    b0 = B(1, :);                     % 1 × m vector of intercepts
-
-    % Standard errors of intercepts
-    se_b0 = sqrt(sigma2 * ZtZ_inv(1,1));  % 1 × m (broadcasted scalar * vector)
-
-    % Compute t-values
-    t_values = b0 ./ se_b0;
+    % choose here which algorithm to use
+%     cVectorized = true;
+%     if ~cVectorized
+%         k = size(Y(:,:),2);
+%         t_values = nan(1,k);
+%         X_design = [ones(size(Y,1),1), C];  % add intercept to predictors
+%     
+%         for col=1:size(Y(:,:),2)
+%             Y_col = Y(:,col);
+%             b = X_design \ Y_col;
+%     
+%             % Estimate residual variance
+%             res = Y_col - X_design * b;
+%             s2 = sum(res.^2) / (length(Y_col) - size(X_design,2));
+%     
+%             % Standard error of intercept (β₀)
+%             XtX_inv = inv(X_design' * X_design);
+%             se_b0 = sqrt(s2 * XtX_inv(1,1));
+%     
+%             % t-statistic for β₀
+%             t_values(col) = b(1) / se_b0;
+%         end
+%     
+%     else
+        [n, m] = size(Y);
+        Z = [ones(n, 1), C];              % Design matrix (n × (p+1))
+        ZtZ_inv = inv(Z' * Z);            % (p+1) × (p+1)
+        H = Z * ZtZ_inv * Z';             % Hat matrix
+        M = eye(n) - H;                   % Residual-maker matrix
+    
+        % Project X onto residual space
+        R = M * Y;                        % Residuals after regressing each Y on Z
+        sigma2 = sum(R.^2, 1) / (n - size(Z, 2));  % 1 × m vector of residual variances
+    
+        % Compute betas all at once
+        B = ZtZ_inv * (Z' * Y);           % (p+1) × m matrix of coefficients
+    
+        % Extract intercepts
+        b0 = B(1, :);                     % 1 × m vector of intercepts
+    
+        % Standard errors of intercepts
+        se_b0 = sqrt(sigma2 * ZtZ_inv(1,1));  % 1 × m (broadcasted scalar * vector)
+    
+        % Compute t-values
+        t_values = b0 ./ se_b0;
+    % end
 end
 
 function t_values = ttest2_with_covariates(X, G, C)
