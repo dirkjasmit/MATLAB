@@ -14,10 +14,11 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
 % Additional parameters for varargin
 % - adjacencyMatrix: matrix describing which channels are connected (numChannels x numChannels)
 % - numPermutations: how many permutations to perform
-% - pThreshold:      threshold at which clusters are defined (def=0.01)
-% - direction:       'pos' or 'neg': positive or negative effects (def =
+% - pThreshold :     threshold at which clusters are defined (def=0.01)
+% - direction  :     'pos' or 'neg': positive or negative effects (def =
 %                    'pos')
 % - numClusters:     number of clusters to extract (def = 1)
+% - covariates :     covariate data (nsubj x ncovar)
 
     % Initialize input parser
     p = inputParser;
@@ -35,7 +36,7 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
     addParameter(p, 'numClusters', 1);
     addParameter(p, 'doImpute', true);
     addParameter(p, 'covariates', []);
-    addParameter(p, 'parallel', []);
+%    addParameter(p, 'parallel', []);
 
     % Parse input arguments
     parse(p, D, Y, ID, adjacencyMatrix, varargin{:});
