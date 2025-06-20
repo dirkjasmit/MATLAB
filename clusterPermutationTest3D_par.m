@@ -92,6 +92,7 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
             % reverse the direction. swap group labels 1-->0 and 0-->1
             G = 1-G;
         end
+        X = D;
     end
     
     % get some sizes, note that numSubjects may not be the actual number of
@@ -112,7 +113,10 @@ function [p_values, observedClusters, observedStats, permutedStats, clusterMask,
     % impute missing data is requested
     if any(isnan(X(:))) && doImpute
         warning('imputing missing data in difference scores of the data (data1-data2)')
-        X = pcambtri(X);
+        try
+            X = pcambtri(X);
+        catch
+        end
         valid = ~isnan(sum(X,2));
         X = X(valid,:);
         numSubjects = sum(valid);
